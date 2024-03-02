@@ -1,22 +1,32 @@
 import { getLogger } from "../logger";
-import WebSocket from "ws";
 import { Game } from "./game";
 import { getWriter } from "./data-writer";
 import { getTimer, ticker } from "./ticker";
 
 const FPS = 1000 / 60;
 
+type WS = {
+    send: (msg: string) => void;
+}
+const wsToState = new Map<WS, State>();
+export function onClose(ws: WS) {
+    const state = wsToState.get(ws);
+    if (state) {
+        state.close = true;
+    }
+}
 
-
-async function waitForOpen(socket: WebSocket): Promise<void> {
-    return new Promise(function waitForOpen(resolve, reject) {
-        if (socket.readyState !== WebSocket.OPEN) {
-            socket.once("open", resolve);
-            socket.once("error", reject);
-        } else {
-            resolve();
-        }
-    });
+export function onMessage(ws: WS, msg: string) {
+    const state = wsToState.get(ws);
+    if (!state) {
+        return;
+    }
+    try {
+        state.messages.push(JSON.parse(msg.toString()) as Message);
+    } catch (e) {
+        console.error("ERROR", e);
+        state.error = true;
+    }
 }
 
 type State = {
@@ -51,43 +61,16 @@ type Fire = {
 
 type Message = Stop | Start | Fire;
 
-function onMessage(state: State) {
-    return function onMessage(msg: string | Buffer) {
-        try {
-            state.messages.push(JSON.parse(msg.toString()) as Message);
-        } catch (e) {
-            console.error("ERROR", e);
-            state.error = true;
-        }
-    }
-}
-
 let gamesPlayed = 0;
-async function playGame(p1: WebSocket, p2: WebSocket) {
-    try {
-        await Promise.all([waitForOpen(p1), waitForOpen(p2)]);
-    } catch (e) {
-        // handle error
-    }
+async function playGame(p1: WS, p2: WS) {
 
     p1.send(JSON.stringify({ type: "start" }));
     p2.send(JSON.stringify({ type: "start" }));
 
     const s1 = createState();
     const s2 = createState();
-
-    p1.on("message", onMessage(s1));
-    p2.on("message", onMessage(s2));
-    p1.on("close", () => s1.close = true);
-    p2.on("close", () => s2.close = true);
-    p1.on("error", (e) => {
-        console.error("p1 ERROR", e);
-        s1.error = true
-    });
-    p2.on("error", (e) => {
-        console.error("p2 ERROR", e);
-        s2.error = true
-    });
+    wsToState.set(p1,s1);
+    wsToState.set(p2,s2);
 
     const gameTicker = ticker(FPS, getWriter());
     const game = new Game(100);
@@ -175,18 +158,19 @@ async function playGame(p1: WebSocket, p2: WebSocket) {
             getLogger().error(`Played ${gamesPlayed} games`);
         }
         getWriter().count("games-played");
+        wsToState.delete(p1);
+        wsToState.delete(p2);
     }
     }
 
     export function createGameRunner() {
-        let waitingPlayer: WebSocket | undefined = undefined;
-        return function addPlayer(socket: WebSocket) {
+        let waitingPlayer: WS | undefined = undefined;
+        return function addPlayer(socket: WS) {
             if (!waitingPlayer) {
                 waitingPlayer = socket;
                 getLogger().info("Player 1 connected");
                 return;
-            }
-            
+            }  
             getLogger().info("Player 2 connected");
             playGame(waitingPlayer, socket);
         waitingPlayer = undefined;
