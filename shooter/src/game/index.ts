@@ -160,6 +160,7 @@ async function playGame(p1: WS, p2: WS) {
         getWriter().count("games-played");
         wsToState.delete(p1);
         wsToState.delete(p2);
+        game.reclaim();
     }
     }
 
